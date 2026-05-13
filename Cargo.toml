@@ -9,7 +9,7 @@ description = "A safety tool to check for breaking changes in Soroban contract u
 wasmparser = "0.201.0"
 
 # Stellar/Soroban XDR
-stellar-xdr = { version = "21.2.0", features = ["all", "arbitrary"] }
+stellar-xdr = { version = "21.2.0", features = ["std", "curr", "arbitrary"] }
 
 # CLI and Utilities
 clap = { version = "4.4", features = ["derive"] }
