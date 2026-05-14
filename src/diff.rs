@@ -54,6 +54,11 @@ pub fn compare(old: &ContractSpec, new: &ContractSpec) -> DiffReport {
     report
 }
 
+/// Helper to detect if a User-Defined Type represents an Event by standard Soroban naming conventions.
+fn is_event(name: &str) -> bool {
+    name.to_lowercase().contains("event")
+}
+
 /// Compare function signatures between old and new contract specs.
 fn compare_functions(old: &ContractSpec, new: &ContractSpec, report: &mut DiffReport) {
     // Check for removed or changed functions
@@ -184,13 +189,15 @@ fn types_equal(a: &ScSpecTypeDef, b: &ScSpecTypeDef) -> bool {
 /// Compare struct definitions between old and new contract specs.
 fn compare_structs(old: &ContractSpec, new: &ContractSpec, report: &mut DiffReport) {
     for (name, old_struct) in &old.structs {
+        let is_evt = is_event(name);
         match new.structs.get(name) {
             None => {
                 report.findings.push(Finding {
                     severity: Severity::Critical,
-                    category: "Struct Removed".to_string(),
+                    category: if is_evt { "Event Definition Removed".to_string() } else { "Struct Removed".to_string() },
                     message: format!(
-                        "Struct '{}' was removed. Storage using this type will be unreadable.",
+                        "{} '{}' was removed. Storage or systems relying on this type will break.",
+                        if is_evt { "Event struct" } else { "Struct" },
                         name
                     ),
                 });
@@ -225,6 +232,9 @@ fn check_struct_fields(
 ) {
     let old_fields: &[ScSpecUdtStructFieldV0] = old_struct.fields.as_ref();
     let new_fields: &[ScSpecUdtStructFieldV0] = new_struct.fields.as_ref();
+    let is_evt = is_event(name);
+    let category_prefix = if is_evt { "Event Schema" } else { "Struct Field" };
+    let msg_prefix = if is_evt { "Event schema" } else { "Struct" };
 
     // Check for removed fields
     for old_field in old_fields {
@@ -233,10 +243,10 @@ fn check_struct_fields(
         if !still_exists {
             report.findings.push(Finding {
                 severity: Severity::Critical,
-                category: "Struct Field Removed".to_string(),
+                category: format!("{} Removed", category_prefix),
                 message: format!(
-                    "Struct '{}': field '{}' was removed. Existing storage will be corrupted.",
-                    name, old_name
+                    "{} '{}': field '{}' was removed. Backwards compatibility is broken.",
+                    msg_prefix, name, old_name
                 ),
             });
         }
@@ -251,11 +261,11 @@ fn check_struct_fields(
         if old_name != new_name {
             report.findings.push(Finding {
                 severity: Severity::Critical,
-                category: "Struct Field Reordered".to_string(),
+                category: format!("{} Reordered", category_prefix),
                 message: format!(
-                    "Struct '{}': field at position {} changed from '{}' to '{}'. \
-                     Positional serialization means this breaks storage layout.",
-                    name, i, old_name, new_name
+                    "{} '{}': field at position {} changed from '{}' to '{}'. \
+                     Positional serialization breaks layout compatibility.",
+                    msg_prefix, name, i, old_name, new_name
                 ),
             });
         }
@@ -264,10 +274,10 @@ fn check_struct_fields(
         if !types_equal(&old_field.type_, &new_field.type_) {
             report.findings.push(Finding {
                 severity: Severity::Critical,
-                category: "Struct Field Type Changed".to_string(),
+                category: format!("{} Type Changed", category_prefix),
                 message: format!(
-                    "Struct '{}': field '{}' (position {}) type changed from `{}` to `{}`.",
-                    name, old_name, i, 
+                    "{} '{}': field '{}' (position {}) type changed from `{}` to `{}`.",
+                    msg_prefix, name, old_name, i, 
                     crate::mapper::type_to_string(&old_field.type_), 
                     crate::mapper::type_to_string(&new_field.type_)
                 ),
@@ -295,13 +305,15 @@ fn check_struct_fields(
 /// Compare enum definitions between old and new contract specs.
 fn compare_enums(old: &ContractSpec, new: &ContractSpec, report: &mut DiffReport) {
     for (name, old_enum) in &old.enums {
+        let is_evt = is_event(name);
         match new.enums.get(name) {
             None => {
                 report.findings.push(Finding {
                     severity: Severity::Critical,
-                    category: "Enum Removed".to_string(),
+                    category: if is_evt { "Event Enum Removed".to_string() } else { "Enum Removed".to_string() },
                     message: format!(
-                        "Enum '{}' was removed. Data using this type will be invalid.",
+                        "{} '{}' was removed. Data using this type will be invalid.",
+                        if is_evt { "Event enum" } else { "Enum" },
                         name
                     ),
                 });
@@ -331,6 +343,9 @@ fn check_enum_cases(
     new_enum: &ScSpecUdtEnumV0,
     report: &mut DiffReport,
 ) {
+    let is_evt = is_event(name);
+    let category_prefix = if is_evt { "Event Enum Case" } else { "Enum Case" };
+    let msg_prefix = if is_evt { "Event enum" } else { "Enum" };
     let old_cases: &[ScSpecUdtEnumCaseV0] = old_enum.cases.as_ref();
     let new_cases: &[ScSpecUdtEnumCaseV0] = new_enum.cases.as_ref();
 
@@ -342,11 +357,11 @@ fn check_enum_cases(
                 // The case was removed entirely
                 report.findings.push(Finding {
                     severity: Severity::Critical,
-                    category: "Enum Case Removed".to_string(),
+                    category: format!("{} Removed", category_prefix),
                     message: format!(
-                        "Enum '{}': case '{}' (value: {}) was removed. \
-                         On-chain data with this value will be orphaned/invalid.",
-                        name, old_name, old_case.value
+                        "{} '{}': case '{}' (value: {}) was removed. \
+                         On-chain data or events relying on this value will be invalid.",
+                        msg_prefix, name, old_name, old_case.value
                     ),
                 });
             }
@@ -355,11 +370,11 @@ fn check_enum_cases(
                 if old_case.value != new_case.value {
                     report.findings.push(Finding {
                         severity: Severity::Critical,
-                        category: "Enum Case Value Changed".to_string(),
+                        category: format!("{} Value Changed", category_prefix),
                         message: format!(
-                            "Enum '{}': case '{}' value changed from {} to {}. \
+                            "{} '{}': case '{}' value changed from {} to {}. \
                              This breaks data serialization.",
-                            name, old_name, old_case.value, new_case.value
+                            msg_prefix, name, old_name, old_case.value, new_case.value
                         ),
                     });
                 }
@@ -374,10 +389,10 @@ fn check_enum_cases(
             if !old_cases.iter().any(|c| c.name.to_string() == new_name) {
                 report.findings.push(Finding {
                     severity: Severity::Info,
-                    category: "Enum Case Added".to_string(),
+                    category: format!("{} Added", category_prefix),
                     message: format!(
-                        "Enum '{}': new case '{}' (value {}) added.",
-                        name, new_name, new_case.value
+                        "{} '{}': new case '{}' (value {}) added.",
+                        msg_prefix, name, new_name, new_case.value
                     ),
                 });
             }
@@ -395,7 +410,7 @@ fn detect_cascading_layout_breaks(old: &ContractSpec, report: &mut DiffReport) {
     for finding in &report.findings {
         if finding.severity == Severity::Critical {
             let tokens: Vec<&str> = finding.message.split('\'').collect();
-            if tokens.len() >= 3 && (finding.message.starts_with("Struct") || finding.message.starts_with("Enum")) {
+            if tokens.len() >= 3 && (finding.message.starts_with("Struct") || finding.message.starts_with("Enum") || finding.message.starts_with("Event")) {
                 let type_name = tokens[1].to_string();
                 broken_types.insert(type_name);
             }
