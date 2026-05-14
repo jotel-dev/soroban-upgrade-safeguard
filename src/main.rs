@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
 
+mod diff;
 mod loader;
 mod parser;
 mod spec;
@@ -40,8 +41,37 @@ fn main() -> Result<()> {
     println!("  ✅ New: {} ({} bytes)", new.path, new.bytes.len());
     println!("     └─ {}", new_spec.summary());
 
-    println!("\n✅ Contract specs decoded successfully.");
-    println!("   Next: Comparing function signatures and types...");
+    // Run comparison
+    println!("\n🔬 Analyzing changes...");
+    let report = diff::compare(&old_spec, &new_spec);
+
+    // Display findings
+    if report.findings.is_empty() {
+        println!("\n✅ No breaking changes detected. Upgrade looks safe!");
+    } else {
+        println!();
+        for finding in &report.findings {
+            let icon = match finding.severity {
+                diff::Severity::Critical => "🔴 CRITICAL",
+                diff::Severity::Warning => "🟡 WARNING ",
+                diff::Severity::Info => "🔵 INFO    ",
+            };
+            println!("  {} [{}] {}", icon, finding.category, finding.message);
+        }
+
+        println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!(
+            "  Summary: {} critical, {} warnings, {} info",
+            report.critical_count(),
+            report.warning_count(),
+            report.info_count()
+        );
+
+        if report.critical_count() > 0 {
+            println!("\n❌ Upgrade has CRITICAL issues. Review before deploying!");
+        }
+    }
 
     Ok(())
 }
+
