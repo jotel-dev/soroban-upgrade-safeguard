@@ -1,1 +1,2 @@
-/target
+# Ignore all Cargo build output, including nested fixture projects
+**/target/
