@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
+use stellar_xdr::curr::ScSpecEntry;
 
 mod loader;
 mod parser;
@@ -28,27 +29,45 @@ fn main() -> Result<()> {
     // Old WASM
     let old = loader::load_wasm(&args.old_wasm)?;
     let old_meta = parser::extract_metadata(&old.bytes)?;
-    println!(
-        "  ✅ Old: {} ({} bytes, {} spec entries)",
-        old.path,
-        old.bytes.len(),
-        old_meta.spec.len()
-    );
+    print_meta_summary("Old", &old.path, old.bytes.len(), &old_meta);
 
     // New WASM
     let new = loader::load_wasm(&args.new_wasm)?;
     let new_meta = parser::extract_metadata(&new.bytes)?;
-    println!(
-        "  ✅ New: {} ({} bytes, {} spec entries)",
-        new.path,
-        new.bytes.len(),
-        new_meta.spec.len()
-    );
+    print_meta_summary("New", &new.path, new.bytes.len(), &new_meta);
 
-    println!("\n✅ Metadata extracted successfully.");
-    println!("   Next: Decoding XDR spec entries...");
+    println!("\n✅ Functions and Types decoded successfully.");
+    println!("   Next: Implementing signature comparison logic...");
 
     Ok(())
 }
+
+fn print_meta_summary(label: &str, path: &str, size: usize, meta: &parser::SorobanMetadata) {
+    let mut functions = 0;
+    let mut structs = 0;
+    let mut enums = 0;
+    let mut others = 0;
+
+    for entry in &meta.spec {
+        match entry {
+            ScSpecEntry::FunctionV0(_) => functions += 1,
+            ScSpecEntry::UdtStructV0(_) => structs += 1,
+            ScSpecEntry::UdtEnumV0(_) => enums += 1,
+            _ => others += 1,
+        }
+    }
+
+    println!(
+        "  ✅ {}: {} ({} bytes)",
+        label,
+        path,
+        size
+    );
+    println!(
+        "     └─ Functions: {}, Structs: {}, Enums: {}, Others: {}",
+        functions, structs, enums, others
+    );
+}
+
 
 
