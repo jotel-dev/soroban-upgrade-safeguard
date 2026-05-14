@@ -1,5 +1,7 @@
 # Soroban Upgrade Safeguard 🛡️
 
+![Soroban Upgrade Safeguard Demo](assets/demo.png)
+
 A powerful CLI tool to analyze and validate Soroban smart contract upgrades on the Stellar network. It detects breaking changes in storage layout, function signatures, and event schemas before you deploy.
 
 ## Features
