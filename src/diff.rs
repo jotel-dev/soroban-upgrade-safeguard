@@ -1,5 +1,7 @@
 use crate::spec::ContractSpec;
-use stellar_xdr::curr::{ScSpecFunctionInputV0, ScSpecFunctionV0, ScSpecTypeDef};
+use stellar_xdr::curr::{
+    ScSpecFunctionInputV0, ScSpecFunctionV0, ScSpecTypeDef, ScSpecUdtStructFieldV0, ScSpecUdtStructV0,
+};
 
 /// Severity of a detected issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +44,7 @@ pub fn compare(old: &ContractSpec, new: &ContractSpec) -> DiffReport {
     let mut report = DiffReport::default();
 
     compare_functions(old, new, &mut report);
+    compare_structs(old, new, &mut report);
 
     report
 }
@@ -167,4 +170,113 @@ fn check_function_signature(
 /// We use the PartialEq derive on the XDR types.
 fn types_equal(a: &ScSpecTypeDef, b: &ScSpecTypeDef) -> bool {
     a == b
+}
+
+/// Compare struct definitions between old and new contract specs.
+fn compare_structs(old: &ContractSpec, new: &ContractSpec, report: &mut DiffReport) {
+    for (name, old_struct) in &old.structs {
+        match new.structs.get(name) {
+            None => {
+                report.findings.push(Finding {
+                    severity: Severity::Critical,
+                    category: "Struct Removed".to_string(),
+                    message: format!(
+                        "Struct '{}' was removed. Storage using this type will be unreadable.",
+                        name
+                    ),
+                });
+            }
+            Some(new_struct) => {
+                check_struct_fields(name, old_struct, new_struct, report);
+            }
+        }
+    }
+
+    // Check for newly added structs (informational)
+    for name in new.structs.keys() {
+        if !old.structs.contains_key(name) {
+            report.findings.push(Finding {
+                severity: Severity::Info,
+                category: "Struct Added".to_string(),
+                message: format!("New struct '{}' added.", name),
+            });
+        }
+    }
+}
+
+/// Compare fields of two structs with the same name.
+///
+/// Soroban serializes struct fields by position order, so field reordering,
+/// removal, or type changes all break storage layout compatibility.
+fn check_struct_fields(
+    name: &str,
+    old_struct: &ScSpecUdtStructV0,
+    new_struct: &ScSpecUdtStructV0,
+    report: &mut DiffReport,
+) {
+    let old_fields: &[ScSpecUdtStructFieldV0] = old_struct.fields.as_ref();
+    let new_fields: &[ScSpecUdtStructFieldV0] = new_struct.fields.as_ref();
+
+    // Check for removed fields
+    for old_field in old_fields {
+        let old_name = old_field.name.to_string();
+        let still_exists = new_fields.iter().any(|f| f.name.to_string() == old_name);
+        if !still_exists {
+            report.findings.push(Finding {
+                severity: Severity::Critical,
+                category: "Struct Field Removed".to_string(),
+                message: format!(
+                    "Struct '{}': field '{}' was removed. Existing storage will be corrupted.",
+                    name, old_name
+                ),
+            });
+        }
+    }
+
+    // Check fields that exist in both versions, by position
+    for (i, (old_field, new_field)) in old_fields.iter().zip(new_fields.iter()).enumerate() {
+        let old_name = old_field.name.to_string();
+        let new_name = new_field.name.to_string();
+
+        // Field at the same position has a different name — reordering detected
+        if old_name != new_name {
+            report.findings.push(Finding {
+                severity: Severity::Critical,
+                category: "Struct Field Reordered".to_string(),
+                message: format!(
+                    "Struct '{}': field at position {} changed from '{}' to '{}'. \
+                     Positional serialization means this breaks storage layout.",
+                    name, i, old_name, new_name
+                ),
+            });
+        }
+
+        // Field type changed
+        if !types_equal(&old_field.type_, &new_field.type_) {
+            report.findings.push(Finding {
+                severity: Severity::Critical,
+                category: "Struct Field Type Changed".to_string(),
+                message: format!(
+                    "Struct '{}': field '{}' (position {}) type changed from {:?} to {:?}.",
+                    name, old_name, i, old_field.type_, new_field.type_
+                ),
+            });
+        }
+    }
+
+    // Check for new fields appended at the end
+    if new_fields.len() > old_fields.len() {
+        for new_field in &new_fields[old_fields.len()..] {
+            report.findings.push(Finding {
+                severity: Severity::Warning,
+                category: "Struct Field Added".to_string(),
+                message: format!(
+                    "Struct '{}': new field '{}' appended. \
+                     Existing storage entries won't have this field — ensure migration handles defaults.",
+                    name,
+                    new_field.name.to_string()
+                ),
+            });
+        }
+    }
 }
