@@ -1,3 +1,4 @@
+use crate::mapper::LayoutMapper;
 use crate::spec::ContractSpec;
 use stellar_xdr::curr::{
     ScSpecFunctionInputV0, ScSpecFunctionV0, ScSpecTypeDef, ScSpecUdtEnumCaseV0, ScSpecUdtEnumV0,
@@ -47,6 +48,8 @@ pub fn compare(old: &ContractSpec, new: &ContractSpec) -> DiffReport {
     compare_functions(old, new, &mut report);
     compare_structs(old, new, &mut report);
     compare_enums(old, new, &mut report);
+
+    detect_cascading_layout_breaks(old, &mut report);
 
     report
 }
@@ -377,6 +380,54 @@ fn check_enum_cases(
                         name, new_name, new_case.value
                     ),
                 });
+            }
+        }
+    }
+}
+
+/// Uses dependency graphing to figure out if storage layout changes cascade to other types.
+fn detect_cascading_layout_breaks(old: &ContractSpec, report: &mut DiffReport) {
+    let old_mapper = LayoutMapper::new(old);
+    let reverse_deps = old_mapper.build_reverse_dependencies();
+    
+    // Collect all UDTs that had a critical breaking change
+    let mut broken_types = std::collections::HashSet::new();
+    for finding in &report.findings {
+        if finding.severity == Severity::Critical {
+            let tokens: Vec<&str> = finding.message.split('\'').collect();
+            if tokens.len() >= 3 && (finding.message.starts_with("Struct") || finding.message.starts_with("Enum")) {
+                let type_name = tokens[1].to_string();
+                broken_types.insert(type_name);
+            }
+        }
+    }
+    
+    // A queue for transitive breaks
+    let mut queue: Vec<String> = broken_types.into_iter().collect();
+    let mut i = 0;
+    let mut cascaded = std::collections::HashSet::new();
+    
+    while i < queue.len() {
+        let current_broken_type = queue[i].clone();
+        i += 1;
+        
+        if let Some(dependents) = reverse_deps.get(&current_broken_type) {
+            for dep in dependents {
+                // Ignore if it was the original broken type
+                if !cascaded.contains(dep) {
+                    cascaded.insert(dep.clone());
+                    queue.push(dep.clone());
+                    
+                    report.findings.push(Finding {
+                        severity: Severity::Critical,
+                        category: "Cascading Layout Break".to_string(),
+                        message: format!(
+                            "Type '{}' layout is implicitly broken safely because it contains modified type '{}'. \
+                             This breaks backwards compatibility for storage.",
+                            dep, current_broken_type
+                        ),
+                    });
+                }
             }
         }
     }

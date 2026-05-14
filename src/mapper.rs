@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::spec::ContractSpec;
 use stellar_xdr::curr::{ScSpecTypeDef, ScSpecUdtUnionCaseV0};
@@ -60,6 +60,43 @@ impl<'a> LayoutMapper<'a> {
         let mut deps = HashSet::new();
         self.extract_udts(type_def, &mut deps);
         deps
+    }
+
+    /// Builds a graph mapping each UDT name to a list of other UDT names that depend on it.
+    pub fn build_reverse_dependencies(&self) -> HashMap<String, Vec<String>> {
+        let mut reverse_deps: HashMap<String, Vec<String>> = HashMap::new();
+
+        for (name, struct_def) in &self.spec.structs {
+            let fields: &[stellar_xdr::curr::ScSpecUdtStructFieldV0] = struct_def.fields.as_ref();
+            for field in fields {
+                let deps = self.get_udt_dependencies(&field.type_);
+                for dep in deps {
+                    reverse_deps.entry(dep).or_default().push(name.clone());
+                }
+            }
+        }
+
+        for (name, union_def) in &self.spec.unions {
+            let cases: &[stellar_xdr::curr::ScSpecUdtUnionCaseV0] = union_def.cases.as_ref();
+            for case in cases {
+                if let ScSpecUdtUnionCaseV0::TupleV0(tuple) = case {
+                    let types: &[stellar_xdr::curr::ScSpecTypeDef] = tuple.type_.as_ref();
+                    for t in types {
+                        let deps = self.get_udt_dependencies(t);
+                        for dep in deps {
+                            reverse_deps.entry(dep).or_default().push(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        for deps in reverse_deps.values_mut() {
+            deps.sort();
+            deps.dedup();
+        }
+
+        reverse_deps
     }
 
     fn extract_udts(&self, type_def: &ScSpecTypeDef, deps: &mut HashSet<String>) {
