@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use colored::Colorize;
 use std::path::PathBuf;
 
 mod diff;
@@ -27,24 +28,24 @@ fn main() -> Result<()> {
     println!("🔍 Soroban Upgrade Safeguard");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    println!("\n📦 Loading and Parsing contracts...");
+    println!("\n{}", "📦 Loading and Parsing contracts...".cyan().bold());
 
     // Old WASM
     let old = loader::load_wasm(&args.old_wasm)?;
     let old_meta = parser::extract_metadata(&old.bytes)?;
     let old_spec = spec::ContractSpec::from_entries(&old_meta.spec);
-    println!("  ✅ Old: {} ({} bytes)", old.path, old.bytes.len());
-    println!("     └─ {}", old_spec.summary());
+    println!("  {} {} ({} bytes)", "✅ Old:".green().bold(), old.path, old.bytes.len());
+    println!("     └─ {}", old_spec.summary().dimmed());
 
     // New WASM
     let new = loader::load_wasm(&args.new_wasm)?;
     let new_meta = parser::extract_metadata(&new.bytes)?;
     let new_spec = spec::ContractSpec::from_entries(&new_meta.spec);
-    println!("  ✅ New: {} ({} bytes)", new.path, new.bytes.len());
-    println!("     └─ {}", new_spec.summary());
+    println!("  {} {} ({} bytes)", "✅ New:".green().bold(), new.path, new.bytes.len());
+    println!("     └─ {}", new_spec.summary().dimmed());
 
     // Run comparison
-    println!("\n🔬 Analyzing changes...");
+    println!("\n{}", "🔬 Analyzing structural compatibility...".cyan().bold());
     let diff_report = diff::compare(&old_spec, &new_spec);
 
     // Generate Safety Report
