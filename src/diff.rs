@@ -469,3 +469,197 @@ fn detect_cascading_layout_breaks(old: &ContractSpec, report: &mut DiffReport) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stellar_xdr::curr::{ScSpecTypeUdt, StringM, VecM};
+
+    /// Helper: build a minimal ContractSpec with the given structs.
+    fn spec_with_structs(structs: Vec<(&str, Vec<(&str, ScSpecTypeDef)>)>) -> ContractSpec {
+        let mut spec = ContractSpec::default();
+        for (name, fields) in structs {
+            let xdr_fields: Vec<ScSpecUdtStructFieldV0> = fields
+                .into_iter()
+                .map(|(fname, ftype)| ScSpecUdtStructFieldV0 {
+                    doc: StringM::default(),
+                    name: fname.try_into().unwrap(),
+                    type_: ftype,
+                })
+                .collect();
+            spec.structs.insert(
+                name.to_string(),
+                ScSpecUdtStructV0 {
+                    doc: StringM::default(),
+                    lib: StringM::default(),
+                    name: name.try_into().unwrap(),
+                    fields: VecM::try_from(xdr_fields).unwrap(),
+                },
+            );
+        }
+        spec
+    }
+
+    /// Helper: create a UDT type reference.
+    fn udt(name: &str) -> ScSpecTypeDef {
+        ScSpecTypeDef::Udt(ScSpecTypeUdt {
+            name: name.try_into().unwrap(),
+        })
+    }
+
+    // ---------------------------------------------------------------
+    // Test 1: cascade detection picks up broken types via type_name
+    // ---------------------------------------------------------------
+    #[test]
+    fn cascade_detects_break_via_type_name() {
+        // Old spec: Inner(value: u32), Outer(inner: Inner)
+        let old = spec_with_structs(vec![
+            ("Inner", vec![("value", ScSpecTypeDef::U32)]),
+            ("Outer", vec![("inner", udt("Inner"))]),
+        ]);
+        // New spec: Inner has its field type changed -> triggers Critical
+        let new = spec_with_structs(vec![
+            ("Inner", vec![("value", ScSpecTypeDef::U64)]),
+            ("Outer", vec![("inner", udt("Inner"))]),
+        ]);
+
+        let report = compare(&old, &new);
+
+        // Inner should have a direct Critical finding
+        let inner_critical = report.findings.iter().any(|f| {
+            f.severity == Severity::Critical
+                && f.type_name.as_deref() == Some("Inner")
+                && f.category != "Cascading Layout Break"
+        });
+        assert!(inner_critical, "Expected a direct critical finding for Inner");
+
+        // Outer should have a cascading break
+        let outer_cascade = report.findings.iter().any(|f| {
+            f.severity == Severity::Critical
+                && f.type_name.as_deref() == Some("Outer")
+                && f.category == "Cascading Layout Break"
+        });
+        assert!(outer_cascade, "Expected a cascading break for Outer");
+    }
+
+    // ---------------------------------------------------------------
+    // Test 2: changing a finding's message text does NOT affect cascade
+    // ---------------------------------------------------------------
+    #[test]
+    fn cascade_is_message_independent() {
+        // Old spec: Child(x: u32), Parent(child: Child)
+        let old = spec_with_structs(vec![
+            ("Child", vec![("x", ScSpecTypeDef::U32)]),
+            ("Parent", vec![("child", udt("Child"))]),
+        ]);
+
+        // Build a report with a manually crafted finding whose message
+        // is completely different from the production format, but whose
+        // type_name is set correctly.
+        let mut report = DiffReport::default();
+        report.findings.push(Finding {
+            severity: Severity::Critical,
+            category: "TOTALLY CUSTOM CATEGORY".to_string(),
+            message: "This message has no quotes and mentions no type prefix whatsoever.".to_string(),
+            type_name: Some("Child".to_string()),
+        });
+
+        // Run cascade detection against the old spec
+        detect_cascading_layout_breaks(&old, &mut report);
+
+        // Parent should still be detected as cascaded
+        let parent_cascade = report.findings.iter().any(|f| {
+            f.severity == Severity::Critical
+                && f.type_name.as_deref() == Some("Parent")
+                && f.category == "Cascading Layout Break"
+        });
+        assert!(
+            parent_cascade,
+            "Cascade should work regardless of message text"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Test 3: function-level findings (type_name: None) do NOT
+    //         trigger false cascades
+    // ---------------------------------------------------------------
+    #[test]
+    fn function_findings_do_not_cascade() {
+        let old = spec_with_structs(vec![
+            ("MyStruct", vec![("val", ScSpecTypeDef::U32)]),
+        ]);
+
+        let mut report = DiffReport::default();
+        // Simulate a function-level Critical finding with type_name: None
+        report.findings.push(Finding {
+            severity: Severity::Critical,
+            category: "Function Removed".to_string(),
+            message: "Function 'do_stuff' was removed.".to_string(),
+            type_name: None,
+        });
+
+        detect_cascading_layout_breaks(&old, &mut report);
+
+        // Should still be just the one finding -- no cascade
+        assert_eq!(
+            report.findings.len(),
+            1,
+            "Function findings should not trigger cascades"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Test 4: transitive cascades (A -> B -> C)
+    // ---------------------------------------------------------------
+    #[test]
+    fn transitive_cascade_propagates() {
+        // Leaf(x: u32), Mid(leaf: Leaf), Top(mid: Mid)
+        let old = spec_with_structs(vec![
+            ("Leaf", vec![("x", ScSpecTypeDef::U32)]),
+            ("Mid", vec![("leaf", udt("Leaf"))]),
+            ("Top", vec![("mid", udt("Mid"))]),
+        ]);
+        let new = spec_with_structs(vec![
+            ("Leaf", vec![("x", ScSpecTypeDef::U64)]), // break
+            ("Mid", vec![("leaf", udt("Leaf"))]),
+            ("Top", vec![("mid", udt("Mid"))]),
+        ]);
+
+        let report = compare(&old, &new);
+
+        let cascade_types: Vec<&str> = report
+            .findings
+            .iter()
+            .filter(|f| f.category == "Cascading Layout Break")
+            .filter_map(|f| f.type_name.as_deref())
+            .collect();
+
+        assert!(cascade_types.contains(&"Mid"), "Mid should cascade from Leaf");
+        assert!(cascade_types.contains(&"Top"), "Top should cascade from Mid");
+    }
+
+    // ---------------------------------------------------------------
+    // Test 5: no regression in categories/severities for the basic
+    //         struct-field-type-changed scenario
+    // ---------------------------------------------------------------
+    #[test]
+    fn struct_field_type_change_severity_and_category() {
+        let old = spec_with_structs(vec![
+            ("Data", vec![("amount", ScSpecTypeDef::U32)]),
+        ]);
+        let new = spec_with_structs(vec![
+            ("Data", vec![("amount", ScSpecTypeDef::I128)]),
+        ]);
+
+        let report = compare(&old, &new);
+
+        let field_change = report.findings.iter().find(|f| {
+            f.category == "Struct Field Type Changed"
+        });
+        assert!(field_change.is_some(), "Should detect field type change");
+
+        let f = field_change.unwrap();
+        assert_eq!(f.severity, Severity::Critical);
+        assert_eq!(f.type_name.as_deref(), Some("Data"));
+    }
+}
